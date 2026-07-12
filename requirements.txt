@@ -6,3 +6,4 @@ pandas
 opencv-python-headless
 scikit-learn
 requests
+pyshp>=2.3.1

@@ -155,6 +155,11 @@ if run:
         st.session_state.overlay_image = overlay
         st.session_state.mask_image = seg_rgb
         st.session_state.summary_df = summary_df
+        st.session_state.classification_mask = pred_mask.astype(np.int16)
+        st.session_state.classification_confidence = conf_mask.astype(np.float32)
+        st.session_state.class_names = [str(label) for label in classes]
+        st.session_state.shapefile_zip = None
+        st.session_state.shapefile_summary_df = None
 
     st.success("Classification complete.")
 

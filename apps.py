@@ -11,6 +11,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from streamlit_drawable_canvas import st_canvas
 
+from utils import classification_to_shapefile_zip
+
 
 st.set_page_config(page_title="Interactive Map Mapper", layout="wide")
 
@@ -187,6 +189,21 @@ if "canvas_version" not in st.session_state:
 if "current_image_hash" not in st.session_state:
     st.session_state.current_image_hash = None
 
+if "classification_mask" not in st.session_state:
+    st.session_state.classification_mask = None
+
+if "classification_confidence" not in st.session_state:
+    st.session_state.classification_confidence = None
+
+if "class_names" not in st.session_state:
+    st.session_state.class_names = None
+
+if "shapefile_zip" not in st.session_state:
+    st.session_state.shapefile_zip = None
+
+if "shapefile_summary_df" not in st.session_state:
+    st.session_state.shapefile_summary_df = None
+
 
 # -----------------------------
 # Sidebar controls
@@ -256,6 +273,11 @@ new_hash = file_hash(uploaded_file)
 
 if new_hash != st.session_state.current_image_hash:
     st.session_state.samples = []
+    st.session_state.classification_mask = None
+    st.session_state.classification_confidence = None
+    st.session_state.class_names = None
+    st.session_state.shapefile_zip = None
+    st.session_state.shapefile_summary_df = None
     st.session_state.canvas_version += 1
     st.session_state.current_image_hash = new_hash
 
@@ -296,6 +318,11 @@ with right:
 
     if clear_all:
         st.session_state.samples = []
+        st.session_state.classification_mask = None
+        st.session_state.classification_confidence = None
+        st.session_state.class_names = None
+        st.session_state.shapefile_zip = None
+        st.session_state.shapefile_summary_df = None
         st.session_state.canvas_version += 1
         st.rerun()
 
@@ -343,6 +370,12 @@ with right:
                             "b": b,
                         }
                     )
+
+                st.session_state.classification_mask = None
+                st.session_state.classification_confidence = None
+                st.session_state.class_names = None
+                st.session_state.shapefile_zip = None
+                st.session_state.shapefile_summary_df = None
 
                 st.success(f"Added {len(points)} points for label: {current_label}")
                 st.session_state.canvas_version += 1
@@ -535,6 +568,12 @@ if run_classification:
 
         summary_df = pd.DataFrame(rows)
 
+        st.session_state.classification_mask = pred_mask.astype(np.int16)
+        st.session_state.classification_confidence = conf_mask.astype(np.float32)
+        st.session_state.class_names = [str(label) for label in classes]
+        st.session_state.shapefile_zip = None
+        st.session_state.shapefile_summary_df = None
+
         st.subheader("Area summary")
         st.dataframe(summary_df, use_container_width=True)
 
@@ -558,3 +597,86 @@ if run_classification:
             file_name="classification_area_summary.csv",
             mime="text/csv",
         )
+
+# -----------------------------
+# Vector/Shapefile export
+# -----------------------------
+
+if st.session_state.classification_mask is not None:
+    st.divider()
+    st.subheader("Download classified polygons as an ESRI Shapefile")
+
+    if world_corners is None:
+        st.warning(
+            "Enter all four real-world corner coordinates to enable the "
+            "georeferenced Shapefile export."
+        )
+    else:
+        st.caption(
+            "The classified raster is polygonized in WGS 84 longitude/latitude "
+            "(EPSG:4326). The Shapefile components are bundled in one ZIP file."
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            shp_min_pixels = st.number_input(
+                "Minimum connected-region size (pixels)",
+                min_value=1,
+                max_value=1_000_000,
+                value=25,
+                step=10,
+                key="single_page_shp_min_pixels",
+            )
+        with c2:
+            shp_simplify = st.number_input(
+                "Polygon simplification tolerance (pixels)",
+                min_value=0.0,
+                max_value=25.0,
+                value=1.5,
+                step=0.5,
+                key="single_page_shp_simplify",
+            )
+
+        shp_include_unknown = st.checkbox(
+            "Include unknown / low-confidence areas",
+            value=False,
+            key="single_page_shp_unknown",
+        )
+
+        if st.button("Prepare Shapefile ZIP", key="single_page_prepare_shp"):
+            try:
+                with st.spinner("Converting classified pixels to polygons..."):
+                    shp_bytes, shp_summary = classification_to_shapefile_zip(
+                        pred_mask=st.session_state.classification_mask,
+                        classes=st.session_state.class_names,
+                        world_corners=world_corners,
+                        confidence_mask=st.session_state.classification_confidence,
+                        min_region_pixels=int(shp_min_pixels),
+                        simplify_tolerance_pixels=float(shp_simplify),
+                        include_unknown=shp_include_unknown,
+                        basename="classified_map",
+                    )
+                st.session_state.shapefile_zip = shp_bytes
+                st.session_state.shapefile_summary_df = shp_summary
+                st.success(
+                    f"Shapefile prepared with {len(shp_summary):,} polygon features."
+                )
+            except Exception as exc:
+                st.session_state.shapefile_zip = None
+                st.session_state.shapefile_summary_df = None
+                st.error(f"Could not create the Shapefile: {exc}")
+
+        if st.session_state.shapefile_summary_df is not None:
+            st.dataframe(
+                st.session_state.shapefile_summary_df,
+                use_container_width=True,
+            )
+
+        if st.session_state.shapefile_zip is not None:
+            st.download_button(
+                "Download classified map Shapefile ZIP",
+                data=st.session_state.shapefile_zip,
+                file_name="classified_map_shapefile.zip",
+                mime="application/zip",
+                key="single_page_download_shp",
+            )
