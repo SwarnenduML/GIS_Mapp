@@ -49,16 +49,21 @@ with right:
 with left:
     st.subheader("Click sample points")
 
+    canvas_background = Image.fromarray(img).convert("RGB")
+
     canvas_result = st_canvas(
-        background_image=Image.fromarray(img),
+        background_image=canvas_background,
+        background_color="#FFFFFF",
         height=h,
         width=w,
         drawing_mode="point",
         stroke_width=8,
+        stroke_color="#FF0000",
+        fill_color="rgba(255, 0, 0, 0.35)",
         update_streamlit=True,
         key=f"label_canvas_{st.session_state.canvas_version}",
     )
-
+    
 if add_points:
     if not current_label.strip():
         st.error("Please enter a label first.")
