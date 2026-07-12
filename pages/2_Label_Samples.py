@@ -6,9 +6,9 @@ from PIL import Image
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 from utils import (
-    init_state,
-    draw_samples_on_image,
     add_world_coordinates,
+    draw_samples_on_image,
+    init_state,
 )
 
 
@@ -24,9 +24,13 @@ img = st.session_state.map_image
 h, w = img.shape[:2]
 
 
-def invalidate_classification_outputs():
-    """Remove outputs that no longer match the current training samples."""
-    for key in (
+# ---------------------------------------------------------------------
+# Page/session helpers
+# ---------------------------------------------------------------------
+
+def invalidate_classification_outputs() -> None:
+    """Remove classification outputs that no longer match the samples."""
+    keys = (
         "overlay_image",
         "mask_image",
         "summary_df",
@@ -35,55 +39,67 @@ def invalidate_classification_outputs():
         "class_names",
         "shapefile_zip",
         "shapefile_summary_df",
-    ):
-        st.session_state[key] = None
+    )
+    for key in keys:
+        if key in st.session_state:
+            st.session_state[key] = None
 
 
-# Clear stale click state when a different map is loaded.
 map_hash = hashlib.md5(img.tobytes()).hexdigest()
 
 if st.session_state.get("_label_map_hash") != map_hash:
     st.session_state["_label_map_hash"] = map_hash
+    st.session_state["_label_click_version"] = 0
     st.session_state["_label_message"] = None
-    st.session_state.pop("map_click", None)
 
+if "_label_click_version" not in st.session_state:
+    st.session_state["_label_click_version"] = 0
+
+if "sample_label" not in st.session_state:
+    st.session_state.sample_label = ""
+
+
+# ---------------------------------------------------------------------
+# Controls
+# ---------------------------------------------------------------------
 
 st.subheader("Current label")
 
-control_col, undo_col, clear_col = st.columns([3, 1, 1])
+label_col, undo_col, clear_col = st.columns([3, 1, 1])
 
-with control_col:
+with label_col:
     st.text_input(
         "Label name",
         key="sample_label",
         placeholder="Example: water, highway, forest, building",
-        help="Enter a label first. Every subsequent map click is saved to this label.",
     )
 
 with undo_col:
     st.write("")
     st.write("")
-    if st.button("Undo last", use_container_width=True):
+    if st.button("Undo last", width="stretch"):
         if st.session_state.samples:
             removed = st.session_state.samples.pop()
             invalidate_classification_outputs()
+            st.session_state["_label_click_version"] += 1
             st.session_state["_label_message"] = (
                 "success",
-                f"Removed the last point from label: {removed['label']}",
+                f"Removed the last point from '{removed['label']}'.",
             )
             st.rerun()
         else:
             st.session_state["_label_message"] = (
                 "warning",
-                "There are no sample points to remove.",
+                "There are no points to remove.",
             )
 
 with clear_col:
     st.write("")
     st.write("")
-    if st.button("Clear all", use_container_width=True):
+    if st.button("Clear all", width="stretch"):
         st.session_state.samples = []
         invalidate_classification_outputs()
+        st.session_state["_label_click_version"] += 1
         st.session_state["_label_message"] = (
             "success",
             "All sample points were cleared.",
@@ -91,104 +107,8 @@ with clear_col:
         st.rerun()
 
 
-# Display-width control. The image is resized explicitly, so clicks can be
-# converted accurately back to coordinates in the working classification image.
-if w > 450:
-    default_width = min(w, 900)
-    display_width = st.slider(
-        "Map display width",
-        min_value=450,
-        max_value=w,
-        value=default_width,
-        step=25,
-    )
-else:
-    display_width = w
-
-display_height = max(1, int(round(h * display_width / w)))
-
-samples_df = pd.DataFrame(st.session_state.samples)
-
-if len(samples_df) > 0:
-    clickable_img = draw_samples_on_image(img, samples_df)
-else:
-    clickable_img = img.copy()
-
-clickable_pil = Image.fromarray(clickable_img).resize(
-    (display_width, display_height),
-    Image.Resampling.LANCZOS,
-)
-
-
-def add_clicked_point():
-    """Save one newly clicked point using coordinates from the displayed image."""
-    click = st.session_state.get("map_click")
-    label = st.session_state.get("sample_label", "").strip()
-
-    if not click:
-        return
-
-    if not label:
-        st.session_state["_label_message"] = (
-            "error",
-            "Enter a label before clicking the map.",
-        )
-        return
-
-    try:
-        display_x = float(click["x"])
-        display_y = float(click["y"])
-    except (KeyError, TypeError, ValueError):
-        st.session_state["_label_message"] = (
-            "error",
-            "The click coordinates could not be read.",
-        )
-        return
-
-    # Convert from displayed-image coordinates to working-image coordinates.
-    x = int(round(display_x * w / display_width))
-    y = int(round(display_y * h / display_height))
-
-    x = min(max(x, 0), w - 1)
-    y = min(max(y, 0), h - 1)
-
-    r, g, b = img[y, x].tolist()
-
-    st.session_state.samples.append(
-        {
-            "label": label,
-            "x": x,
-            "y": y,
-            "r": int(r),
-            "g": int(g),
-            "b": int(b),
-        }
-    )
-
-    invalidate_classification_outputs()
-    st.session_state["_label_message"] = (
-        "success",
-        f"Added point ({x}, {y}) to label: {label}",
-    )
-
-
-st.subheader("Click sample points")
-
-st.caption(
-    "Enter a label above and click directly on the visible map. "
-    "Each click is saved immediately."
-)
-
-streamlit_image_coordinates(
-    clickable_pil,
-    width=display_width,
-    key="map_click",
-    cursor="crosshair",
-    on_click=add_clicked_point,
-)
-
 message = st.session_state.get("_label_message")
-if message:
+if message is not None:
     level, text = message
     if level == "error":
         st.error(text)
@@ -198,33 +118,133 @@ if message:
         st.success(text)
 
 
+# ---------------------------------------------------------------------
+# Stable click component
+#
+# Important:
+# - The image passed to the component stays unchanged.
+# - No on_click callback is used.
+# - A click is added only when the user presses the Add button.
+# - The component key is reset after a point is added.
+#
+# This avoids the repeated rerender/resize loop that can occur when the
+# component image is changed inside its own callback.
+# ---------------------------------------------------------------------
+
+st.subheader("Select a point")
+
+st.caption(
+    "Enter a label, click once on the map, and then press "
+    "'Add selected point'."
+)
+
+display_width = min(w, 900)
+display_height = max(1, round(h * display_width / w))
+
+display_img = Image.fromarray(img).resize(
+    (display_width, display_height),
+    Image.Resampling.LANCZOS,
+)
+
+click = streamlit_image_coordinates(
+    display_img,
+    width=display_width,
+    key=(
+        f"map_click_{map_hash[:12]}_"
+        f"{st.session_state['_label_click_version']}"
+    ),
+    cursor="crosshair",
+    image_format="PNG",
+    png_compression_level=6,
+)
+
+
+# ---------------------------------------------------------------------
+# Save the selected point
+# ---------------------------------------------------------------------
+
+if click is None:
+    st.info("Click a point on the map.")
+else:
+    click_x = float(click.get("x", 0))
+    click_y = float(click.get("y", 0))
+    rendered_w = max(float(click.get("width", display_width)), 1.0)
+    rendered_h = max(float(click.get("height", display_height)), 1.0)
+
+    x = int(round(click_x * w / rendered_w))
+    y = int(round(click_y * h / rendered_h))
+
+    x = min(max(x, 0), w - 1)
+    y = min(max(y, 0), h - 1)
+
+    st.write(f"Selected image coordinate: **x={x}, y={y}**")
+
+    add_disabled = not st.session_state.sample_label.strip()
+
+    if add_disabled:
+        st.warning("Enter a label before adding the selected point.")
+
+    if st.button(
+        "Add selected point",
+        type="primary",
+        disabled=add_disabled,
+    ):
+        label = st.session_state.sample_label.strip()
+        r, g, b = img[y, x].tolist()
+
+        st.session_state.samples.append(
+            {
+                "label": label,
+                "x": x,
+                "y": y,
+                "r": int(r),
+                "g": int(g),
+                "b": int(b),
+            }
+        )
+
+        invalidate_classification_outputs()
+
+        # Reset the component so the same click cannot be submitted twice.
+        st.session_state["_label_click_version"] += 1
+        st.session_state["_label_message"] = (
+            "success",
+            f"Added point ({x}, {y}) to '{label}'.",
+        )
+        st.rerun()
+
+
+# ---------------------------------------------------------------------
+# Samples and downloads
+# ---------------------------------------------------------------------
+
 samples_df = pd.DataFrame(st.session_state.samples)
 
 st.subheader("Collected samples")
 
-if len(samples_df) == 0:
+if samples_df.empty:
     st.info("No samples added yet.")
 else:
     preview_img = draw_samples_on_image(img, samples_df)
 
-    c1, c2 = st.columns([2, 1])
+    preview_col, table_col = st.columns([2, 1])
 
-    with c1:
+    with preview_col:
         st.image(
             preview_img,
             caption="Labelled sample points",
-            use_container_width=True,
+            width="stretch",
         )
 
-    with c2:
-        st.dataframe(samples_df, use_container_width=True)
+    with table_col:
+        st.dataframe(samples_df, width="stretch")
 
         st.download_button(
             "Download samples CSV",
             data=samples_df.to_csv(index=False).encode("utf-8"),
             file_name="map_label_samples.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
     if st.session_state.world_corners is not None:
@@ -236,7 +256,7 @@ else:
         )
 
         st.subheader("Samples with real-world coordinates")
-        st.dataframe(geo_samples, use_container_width=True)
+        st.dataframe(geo_samples, width="stretch")
 
         st.download_button(
             "Download georeferenced samples CSV",
